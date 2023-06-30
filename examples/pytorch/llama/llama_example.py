@@ -65,7 +65,7 @@ def main():
                         help='repetition penalty')
     parser.add_argument('--max_seq_len', type=int, default=1024,
                         help='max sequence length for position embedding table.')
-    parser.add_argument('--inference_data_type', '--data_type', type=str, choices=['fp32', 'fp16'], default='fp16')
+    parser.add_argument('--inference_data_type', '--data_type', type=str, choices=['fp32', 'bf16', 'fp16'], default='fp16')
     parser.add_argument('--time', action='store_true',
                         help='whether or not to measure time elapsed.')
     parser.add_argument('--enable_random_seed', action='store_true',
@@ -111,6 +111,7 @@ def main():
 
     if tensor_para_size * pipeline_para_size > 1:
         dist.init_process_group(backend=dist.Backend.MPI)
+        print(dist.get_world_size(dist.GroupMember.WORLD))
     rank = dist.get_rank() if dist.is_initialized() else 0
     device_count = dist.get_world_size() if dist.is_initialized() else 1
     device = rank % device_count

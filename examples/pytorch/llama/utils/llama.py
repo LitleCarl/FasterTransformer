@@ -25,8 +25,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.distributed as dist
+from bfloat16 import bfloat16
 
-str_type_map = {"fp32": torch.float32, "fp16": torch.float16}
+str_type_map = {"fp32": torch.float32, "fp16": torch.float16, "bf16":torch.bfloat16}
+reinterpret_map = {bfloat16: np.float16, np.float16: np.float16, np.float32: np.float32}
+weight_data_map = {bfloat16: torch.bfloat16, np.float16: torch.float16, np.float32: torch.float32}
 
 class LlamaWeights(object):
     def __init__(self, 
@@ -65,11 +68,12 @@ class LlamaWeights(object):
                     "fp32": np.float32,
                     "float16": np.float16,
                     "float32": np.float32,
+                    "bf16": bfloat16
                 }[weights_data_type]
             except KeyError:
                 raise ValueError(f"Don't know how to interpret weights_data_type: {weights_data_type}")
 
-        assert weights_data_type in [np.float32, np.float16]
+        assert weights_data_type in [np.float32, np.float16, bfloat16]
         self.weights_data_type = weights_data_type
         self.inference_data_type = str_type_map[inference_data_type]
 
@@ -147,15 +151,14 @@ class LlamaWeights(object):
                 if file_name is not None and is_load(i):
                     w.append(torch.from_numpy(np.fromfile(
                                 "%s/model.layers.%d.%s.bin" % (ckpt_path, i, file_name),
-                                dtype=self.weights_data_type)).to(self.inference_data_type))
+                                dtype=reinterpret_map[self.weights_data_type])).view(weight_data_map[self.weights_data_type]).to(self.inference_data_type))
                 else:
                     w.append(torch.empty(0).to(self.inference_data_type))
 
-        w.append(torch.from_numpy(np.fromfile(ckpt_path + "/model.wte.weight.bin", dtype=self.weights_data_type)).to(self.inference_data_type))
+        w.append(torch.from_numpy(np.fromfile(ckpt_path + "/model.wte.weight.bin", dtype=reinterpret_map[self.weights_data_type])).view(weight_data_map[self.weights_data_type]).to(self.inference_data_type))
         w.append(torch.zeros(self.global_hidden_units, dtype=self.inference_data_type))                                     
-        w.append(torch.from_numpy(np.fromfile(ckpt_path + "/model.final_layernorm.weight.bin", dtype=self.weights_data_type)).to(self.inference_data_type))
-        w.append(torch.from_numpy(np.fromfile(ckpt_path + "/model.lm_head.weight.bin", dtype=self.weights_data_type)).to(self.inference_data_type))
-
+        w.append(torch.from_numpy(np.fromfile(ckpt_path + "/model.final_layernorm.weight.bin",dtype=reinterpret_map[self.weights_data_type])).view(weight_data_map[self.weights_data_type]).to(self.inference_data_type))
+        w.append(torch.from_numpy(np.fromfile(ckpt_path + "/model.lm_head.weight.bin",dtype=reinterpret_map[self.weights_data_type])).view(weight_data_map[self.weights_data_type]).to(self.inference_data_type)) 
         try:
             for i in range(len(w)):
                 if w[i].nelement() > 0:
@@ -225,6 +228,7 @@ class Llama(nn.Module):
 
         world_size = dist.get_world_size()
         # print(tensor_para_size * pipeline_para_size)
+        print("world_size:", world_size)
         assert world_size == tensor_para_size * pipeline_para_size, "tensor_para_size * pipeline_para_size must be equal to world_size."
 
         self.tensor_para_rank = self.rank % self.tensor_para_size

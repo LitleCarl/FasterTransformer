@@ -73,6 +73,22 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         use_gptj_residual,
                                         weights);
             break;
+	case at::ScalarType::BFloat16:
+            ftllama = new FTLlama<__nv_bfloat16>((size_t)head_num,
+                                        (size_t)size_per_head,
+                                        (size_t)inter_size,
+                                        (size_t)layer_num,
+                                        (size_t)vocab_size,
+                                        (size_t)rotary_embedding_dim,
+                                        (float) layernorm_eps,
+                                        start_id,
+                                        end_id,
+                                        tensor_para_size,
+                                        pipeline_para_size,
+                                        (size_t)max_seq_len,
+                                        use_gptj_residual,
+                                        weights);
+            break;
         default:
             throw std::runtime_error("Wrong Tensor type.");
     }
