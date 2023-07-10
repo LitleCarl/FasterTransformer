@@ -280,10 +280,13 @@ public:
             std::cout << error.what();
             exit(-1);
         }
-        catch (...) {
-            std::cout << "Runtime error";
-            exit(-1);
-        }
+	catch(const std::exception& e) {
+        	std::cout << "Caught exception \"" << e.what() << "\"\n";
+    	}
+//catch (...) {
+  //        std::cout << "Runtime error";
+    //       exit(-1);
+      //  }
     }
 
 private:

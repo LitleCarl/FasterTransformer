@@ -613,6 +613,7 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
                             stream_);
         sync_check_cuda_error();
 
+	std::cout << "CJX: " << gpt_weights->position_encoding_table <<std::endl;
         if (has_prefix_soft_prompt_) {
             inputIdsEmbeddingLookupPosEncodingSoftPromptParam<T> param;
             param.from_tensor                   = context_decoder_input_buf_;

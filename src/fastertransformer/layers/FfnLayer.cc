@@ -460,6 +460,7 @@ template<typename T>
 void FfnLayer<T>::allocateBuffer(size_t token_num, int moe_k, bool use_moe)
 {
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
+
     if (use_moe) {
         moe_gates_buf_ =
             (T*)allocator_->reMalloc(moe_gates_buf_, sizeof(T) * pad_to_multiple_of_16(token_num * expert_num_), false);
@@ -479,7 +480,8 @@ void FfnLayer<T>::allocateBuffer(size_t token_num, int moe_k, bool use_moe)
     }
     else {
         const auto type_size = int8_mode_ == 2 ? sizeof(int8_t) : sizeof(T);
-        inter_buf_           = (T*)allocator_->reMalloc(inter_buf_, type_size * token_num * max_inter_size_, false);
+	inter_buf_           = (T*)allocator_->reMalloc(inter_buf_, type_size * token_num * max_inter_size_, false);
+	
         if (use_gated_activation_) {
             inter_buf_2_ = (T*)allocator_->reMalloc(inter_buf_2_, sizeof(T) * token_num * max_inter_size_, false);
         }

@@ -659,8 +659,11 @@ void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream
 
     bool is_half2 = sizeof(T) == 2 && sizeof(T_IN) == 2 && param.k_length % 2 == 0;
     dim3 block((param.k_length / (is_half2 ? 2 : 1) + 31) / 32 * 32);
-
-    if (block.x > 2048 && block.x <= 4096) {
+	
+    if (block.x > 4096) {
+   	LAUNCH_MAKSED_SOFTMAX(8) 
+    }
+    else if (block.x > 2048 && block.x <= 4096) {
         LAUNCH_MAKSED_SOFTMAX(4)
     }
     else if (block.x > 1024) {
@@ -670,7 +673,8 @@ void invokeMaskedSoftmax(MaskedSoftmaxParam<T, T_IN>& param, cudaStream_t stream
         LAUNCH_MAKSED_SOFTMAX(1)
     }
     else {
-        FT_CHECK(param.k_length <= 4096);
+	  exit(-1);
+	    FT_CHECK(param.k_length <= 4096);
     }
 }
 
