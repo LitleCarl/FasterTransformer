@@ -16,3 +16,8 @@ __pycache__/
 _deps/
 /3rdparty/NeMo/
 /3rdparty/apex/
+.DS_Store
+
+/3rdparty/NeMo/
+/3rdparty/apex/
+

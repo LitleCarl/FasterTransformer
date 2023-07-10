@@ -19,7 +19,16 @@
 #include "src/fastertransformer/th_op/th_utils.h"
 #include "src/fastertransformer/utils/cuda_bf16_wrapper.h"
 #include "src/fastertransformer/utils/nccl_utils.h"
-
+#include <iostream>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cstring>
+#include <string>
+#include <random>
+#include <sstream>
+#include <algorithm>
 namespace ft = fastertransformer;
 namespace th = torch;
 namespace torch_ext {
@@ -46,6 +55,106 @@ public:
                          th::optional<int64_t>    return_cum_log_probs_opt) = 0;
 };
 
+class MappedFile {
+public:
+    MappedFile(const std::string& file_path, size_t buffer_size)
+        : file_descriptor_(open(file_path.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR)),
+          buffer_size_(buffer_size), buffer_(nullptr) {
+
+        if (file_descriptor_ == -1) {
+            throw std::runtime_error("Failed to open the file");
+        }
+
+        // Extend the file size to the desired buffer size
+        if (lseek(file_descriptor_, buffer_size_ - 1, SEEK_SET) == -1) {
+            throw std::runtime_error("Failed to extend the file");
+        }
+        if (write(file_descriptor_, "", 1) == -1) {
+            throw std::runtime_error("Failed to write to the file");
+        }
+
+        // Map the file into memory
+        buffer_ = mmap(nullptr, buffer_size_, PROT_READ | PROT_WRITE, MAP_SHARED, file_descriptor_, 0);
+        if (buffer_ == MAP_FAILED) {
+            throw std::runtime_error("Failed to map the file into memory");
+        }
+    }
+
+    void Sync() const {
+        if (msync(buffer_, buffer_size_, MS_SYNC) == -1) {
+            throw std::runtime_error("Failed to sync changes to the file");
+        }
+    }
+
+    ~MappedFile() {
+        if (munmap(buffer_, buffer_size_) == -1) {
+            std::cerr << "Failed to unmap the file from memory" << std::endl;
+        }
+        close(file_descriptor_);
+    }
+
+    void* GetBuffer() const {
+        return buffer_;
+    }
+
+private:
+    int file_descriptor_;
+    size_t buffer_size_;
+    void* buffer_;
+};
+
+
+// namespace uuid {
+//     static std::random_device              rd;
+//     static std::mt19937                    gen(rd());
+//     static std::uniform_int_distribution<> dis(0, 15);
+//     static std::uniform_int_distribution<> dis2(8, 11);
+
+//     std::string generate_uuid_v4() {
+//         std::stringstream ss;
+//         int i;
+//         ss << std::hex;
+//         for (i = 0; i < 8; i++) {
+//             ss << dis(gen);
+//         }
+//         ss << "-";
+//         for (i = 0; i < 4; i++) {
+//             ss << dis(gen);
+//         }
+//         ss << "-4";
+//         for (i = 0; i < 3; i++) {
+//             ss << dis(gen);
+//         }
+//         ss << "-";
+//         ss << dis2(gen);
+//         for (i = 0; i < 3; i++) {
+//             ss << dis(gen);
+//         }
+//         ss << "-";
+//         for (i = 0; i < 12; i++) {
+//             ss << dis(gen);
+//         };
+//         return ss.str();
+//     }
+// }
+std::string get_uuid() {
+    static std::random_device dev;
+    static std::mt19937 rng(dev());
+
+    std::uniform_int_distribution<int> dist(0, 15);
+
+    const char *v = "0123456789abcdef";
+    const bool dash[] = { 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
+
+    std::string res;
+    for (int i = 0; i < 16; i++) {
+        if (dash[i]) res += "-";
+        res += v[dist(rng)];
+        res += v[dist(rng)];
+    }
+    return res;
+}
+
 template<typename T>
 class FTLlama: public IFLlama {
 public:
@@ -62,7 +171,8 @@ public:
             const int64_t            pipeline_para_size,
             const size_t             max_seq_len,
             const bool               use_gptj_residual,
-            const vector<th::Tensor> weights):
+            const vector<th::Tensor> weights, 
+            const int64_t  int8_mode):
         head_num_(head_num),
         size_per_head_(size_per_head),
         inter_size_(inter_size),
@@ -75,7 +185,8 @@ public:
         use_gptj_residual_(use_gptj_residual),
         weights_(weights),
         tensor_para_size_(tensor_para_size),
-        pipeline_para_size_(pipeline_para_size)
+        pipeline_para_size_(pipeline_para_size),
+        int8_mode_(int8_mode)
     {
         ft::check_cuda_error(cublasLtCreate(&cublasltHandle_));
         cublas_algo_map_      = new ft::cublasAlgoMap(GEMM_CONFIG, "");
@@ -84,6 +195,9 @@ public:
         ftNcclInitialize(tensor_para_, pipeline_para_, tensor_para_size, pipeline_para_size);
 
         Llama_weights_.resizeLayer(layer_num_);
+
+        int hidden_units = head_num_ * size_per_head_; 
+
         for (int i = 0; i < (int)layer_num_; i++) {
             Llama_weights_.decoder_layer_weights[i]->pre_layernorm_weights.beta =
                 get_ptr<T>(weights_[i + 0 * layer_num_]);
@@ -113,7 +227,80 @@ public:
                 get_ptr<T>(weights_[i + 12 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->post_attention_layernorm_weights.gamma = 
                 get_ptr<T>(weights_[i + 13 * layer_num_]);
+
+
+            if (int8_mode_ != 0) {
+                // Alloc FFN and Attention int8 weights
+                ft::deviceMalloc(&int8_weights_ptr_[i][0], hidden_units * 3 * hidden_units / tensor_para_size_);
+                ft::deviceMalloc(&int8_weights_ptr_[i][1], hidden_units / tensor_para_size_ * hidden_units);
+                ft::deviceMalloc(&int8_weights_ptr_[i][2], hidden_units * inter_size_ / tensor_para_size_);
+                ft::deviceMalloc(&int8_weights_ptr_[i][3], hidden_units * inter_size_ / tensor_para_size_);
+                ft::deviceMalloc(&int8_weights_ptr_[i][4], inter_size_ / tensor_para_size_ * hidden_units);
+                if (int8_mode_ == 1) {
+                    // Alloc scales for weight only quant for attention and FFN weights
+                    ft::deviceMalloc(&weight_only_scale_ptr_[i][0], 3 * hidden_units / tensor_para_size_);
+                    ft::deviceMalloc(&weight_only_scale_ptr_[i][1], hidden_units);
+                    ft::deviceMalloc(&weight_only_scale_ptr_[i][2], inter_size_ / tensor_para_size_);
+                    ft::deviceMalloc(&weight_only_scale_ptr_[i][3], inter_size_ / tensor_para_size_);
+                    ft::deviceMalloc(&weight_only_scale_ptr_[i][4], hidden_units);
+                }
+            }
+            if (int8_mode_ != 0) {
+                // TODO:cjx 
+                ft::FtCudaDataType dtype = ft::FtCudaDataType::FP16;
+
+                auto tensor = weights_[i + 2 * layer_num_].to(torch::kCPU);
+                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][0],
+                                                        weight_only_scale_ptr_[i][0],
+                                                        {(size_t)hidden_units, (size_t)(3 * hidden_units / tensor_para_size_)},
+                                                        get_ptr<T>(tensor),
+                                                        dtype);
+                
+                tensor = weights_[i + 4 * layer_num_].to(torch::kCPU);
+                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][1],
+                                                     weight_only_scale_ptr_[i][1],
+                                                     {(size_t)(hidden_units / tensor_para_size_), (size_t)hidden_units},
+                                                     get_ptr<T>(tensor),
+                                                     dtype);
+            
+                tensor = weights_[i + 6 * layer_num_].to(torch::kCPU);
+                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][2],
+                                                     weight_only_scale_ptr_[i][2],
+                                                    {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
+                                                     get_ptr<T>(tensor),
+                                                     dtype);
+            
+                tensor = weights_[i + 8 * layer_num_].to(torch::kCPU); 
+                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][3],
+                                                     weight_only_scale_ptr_[i][3],
+                                                    {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
+                                                     get_ptr<T>(tensor),
+                                                     dtype);
+                tensor = weights_[i + 10 * layer_num_].to(torch::kCPU);
+                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][4],
+                                                     weight_only_scale_ptr_[i][4],
+                                                    {(size_t)(inter_size_ / tensor_para_size_), (size_t)hidden_units},
+                                                     get_ptr<T>(tensor),
+                                                     dtype);
+                
+                
+                Llama_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.int8_kernel = int8_weights_ptr_[i][0]; 
+                Llama_weights_.decoder_layer_weights[i]->self_attention_weights.attention_output_weight.int8_kernel = int8_weights_ptr_[i][1]; 
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight.int8_kernel = int8_weights_ptr_[i][2];
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight2.int8_kernel = int8_weights_ptr_[i][3];
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.int8_kernel = int8_weights_ptr_[i][4];
+
+
+                Llama_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.weight_only_quant_scale = weight_only_scale_ptr_[i][0];
+                Llama_weights_.decoder_layer_weights[i]->self_attention_weights.attention_output_weight.weight_only_quant_scale = weight_only_scale_ptr_[i][1];
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight.weight_only_quant_scale = weight_only_scale_ptr_[i][2];
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight2.weight_only_quant_scale = weight_only_scale_ptr_[i][3];
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.weight_only_quant_scale = weight_only_scale_ptr_[i][4];
+            }
+            
+
         }
+
 
         Llama_weights_.pre_decoder_embedding_table   = get_ptr<T>(weights_[14 * layer_num_ + 0]);
         Llama_weights_.post_decoder_layernorm.beta   = get_ptr<T>(weights_[14 * layer_num_ + 1]);
@@ -132,6 +319,25 @@ public:
         cublasLtDestroy(cublasltHandle_);
         delete cublas_algo_map_;
         delete cublas_wrapper_mutex_;
+        if (int8_mode_ != 0) {
+            for (int i = 0; i < int8_weights_ptr_.size(); i++) {
+                for (auto& x : int8_weights_ptr_[i]) {
+                    if (x != nullptr) {
+                        ft::deviceFree(x);
+                    }
+                }
+            }
+
+            if (int8_mode_ == 1) {
+                for (int i = 0; i < weight_only_scale_ptr_.size(); i++) {
+                    for (auto& x : weight_only_scale_ptr_[i]) {
+                        if (x != nullptr) {
+                            ft::deviceFree(x);
+                        }
+                    }
+                }
+            } 
+        }
     }
 
     void forward(th::Tensor&              input_ids,
@@ -205,6 +411,7 @@ public:
                                           false,           // is_free_buffer_after_forward
                                           &prop_,          // cuda_device_prop
                                           attention_type,  // attention_type
+					                      int8_mode_,		       // int8 mode
                                           nullptr,         // custom_all_reduce_comm
                                           0);              // enable_custom_all_reduce
 
@@ -315,6 +522,11 @@ private:
 
     int64_t tensor_para_size_;
     int64_t pipeline_para_size_;
+    int64_t int8_mode_ = 0;
+
+    
+    std::vector<std::vector<int8_t *>> int8_weights_ptr_ = std::vector<std::vector<int8_t *>> (32, std::vector<int8_t*>(5, nullptr));
+    std::vector<std::vector<T *>>      weight_only_scale_ptr_ = std::vector<std::vector<T *>> (32, std::vector<T*>(5, nullptr)); 
 };
 
 class LlamaOp: public th::jit::CustomClassHolder {
@@ -332,7 +544,8 @@ public:
             const int64_t            pipeline_para_size,
             const int64_t            max_seq_len,
             const bool               use_gptj_residual,
-            const vector<th::Tensor> weights);
+            const vector<th::Tensor> weights,
+            const int64_t int8_mode);
 
     ~LlamaOp();
 

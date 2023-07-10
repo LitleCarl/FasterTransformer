@@ -33,7 +33,10 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                      const int64_t            pipeline_para_size,
                      const int64_t            max_seq_len,
                      const bool               use_gptj_residual,
-                     const vector<th::Tensor> weights):
+                     const vector<th::Tensor> weights,
+                     const int64_t            int8_mode
+                     ):
+
     st_(weights[0].scalar_type())
 {
     for (auto t : weights) {
@@ -55,7 +58,8 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                          pipeline_para_size,
                                          (size_t)max_seq_len,
                                          use_gptj_residual,
-                                         weights);
+                                         weights,
+                                         (int64_t)int8_mode);
             break;
         case at::ScalarType::Half:
             ftllama = new FTLlama<half>((size_t)head_num,
@@ -71,7 +75,8 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         pipeline_para_size,
                                         (size_t)max_seq_len,
                                         use_gptj_residual,
-                                        weights);
+                                        weights,
+                                        (int64_t)int8_mode);
             break;
 	case at::ScalarType::BFloat16:
             ftllama = new FTLlama<__nv_bfloat16>((size_t)head_num,
@@ -87,7 +92,8 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         pipeline_para_size,
                                         (size_t)max_seq_len,
                                         use_gptj_residual,
-                                        weights);
+                                        weights,
+                                        (int64_t)int8_mode);
             break;
         default:
             throw std::runtime_error("Wrong Tensor type.");
@@ -180,5 +186,5 @@ static auto fasterTransformerLlamaTHS =
                               int64_t,
                               int64_t,
                               bool,
-                              std::vector<th::Tensor>>())
+                              std::vector<th::Tensor>, int64_t>())
         .def("forward", &torch_ext::LlamaOp::forward);
