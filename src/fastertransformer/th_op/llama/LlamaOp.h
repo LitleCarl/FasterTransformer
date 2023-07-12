@@ -198,29 +198,23 @@ public:
 
         int hidden_units = head_num_ * size_per_head_; 
 
+        vector<th::Tensor> captured_weights;
+        captured_weights.reserve(weights_.size());
+
         for (int i = 0; i < (int)layer_num_; i++) {
             Llama_weights_.decoder_layer_weights[i]->pre_layernorm_weights.beta =
                 get_ptr<T>(weights_[i + 0 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->pre_layernorm_weights.gamma =
                 get_ptr<T>(weights_[i + 1 * layer_num_]);
-            Llama_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.kernel =
-                get_ptr<T>(weights_[i + 2 * layer_num_]);
+
             Llama_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.bias =
                 get_ptr<T>(weights_[i + 3 * layer_num_]);
-            Llama_weights_.decoder_layer_weights[i]->self_attention_weights.attention_output_weight.kernel =
-                get_ptr<T>(weights_[i + 4 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->self_attention_weights.attention_output_weight.bias =
                 get_ptr<T>(weights_[i + 5 * layer_num_]);
-            Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight.kernel = 
-                get_ptr<T>(weights_[i + 6 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight.bias = 
                 get_ptr<T>(weights_[i + 7 * layer_num_]);
-            Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight2.kernel = 
-                get_ptr<T>(weights_[i + 8 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight2.bias = 
                 get_ptr<T>(weights_[i + 9 * layer_num_]);
-            Llama_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.kernel =
-                get_ptr<T>(weights_[i + 10 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.bias =
                 get_ptr<T>(weights_[i + 11 * layer_num_]);
             Llama_weights_.decoder_layer_weights[i]->post_attention_layernorm_weights.beta = 
@@ -228,6 +222,28 @@ public:
             Llama_weights_.decoder_layer_weights[i]->post_attention_layernorm_weights.gamma = 
                 get_ptr<T>(weights_[i + 13 * layer_num_]);
 
+            captured_weights.push_back(weights_[i + 0 * layer_num_]);
+            captured_weights.push_back(weights_[i + 1 * layer_num_]);
+            captured_weights.push_back(weights_[i + 3 * layer_num_]);
+            captured_weights.push_back(weights_[i + 5 * layer_num_]);
+            captured_weights.push_back(weights_[i + 7 * layer_num_]);
+            captured_weights.push_back(weights_[i + 9 * layer_num_]);
+            captured_weights.push_back(weights_[i + 11 * layer_num_]);
+            captured_weights.push_back(weights_[i + 12 * layer_num_]);
+            captured_weights.push_back(weights_[i + 13 * layer_num_]);
+
+            if (int8_mode_ == 0) {
+                Llama_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.kernel = get_ptr<T>(weights_[i + 2 * layer_num_]);
+                Llama_weights_.decoder_layer_weights[i]->self_attention_weights.attention_output_weight.kernel = get_ptr<T>(weights_[i + 4 * layer_num_]);
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight.kernel = get_ptr<T>(weights_[i + 6 * layer_num_]);
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight2.kernel = get_ptr<T>(weights_[i + 8 * layer_num_]);
+                Llama_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.kernel = get_ptr<T>(weights_[i + 10 * layer_num_]);
+                captured_weights.push_back(weights_[i + 2 * layer_num_]);
+                captured_weights.push_back(weights_[i + 4 * layer_num_]);
+                captured_weights.push_back(weights_[i + 6 * layer_num_]);
+                captured_weights.push_back(weights_[i + 8 * layer_num_]);
+                captured_weights.push_back(weights_[i + 10 * layer_num_]);
+            }
 
             if (int8_mode_ != 0) {
                 // Alloc FFN and Attention int8 weights
@@ -244,8 +260,6 @@ public:
                     ft::deviceMalloc(&weight_only_scale_ptr_[i][3], inter_size_ / tensor_para_size_);
                     ft::deviceMalloc(&weight_only_scale_ptr_[i][4], hidden_units);
                 }
-            }
-            if (int8_mode_ != 0) {
                 // TODO:cjx 
                 ft::FtCudaDataType dtype = ft::FtCudaDataType::FP16;
 
@@ -297,8 +311,6 @@ public:
                 Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight2.weight_only_quant_scale = weight_only_scale_ptr_[i][3];
                 Llama_weights_.decoder_layer_weights[i]->ffn_weights.output_weight.weight_only_quant_scale = weight_only_scale_ptr_[i][4];
             }
-            
-
         }
 
 
@@ -306,10 +318,15 @@ public:
         Llama_weights_.post_decoder_layernorm.beta   = get_ptr<T>(weights_[14 * layer_num_ + 1]);
         Llama_weights_.post_decoder_layernorm.gamma  = get_ptr<T>(weights_[14 * layer_num_ + 2]);
         Llama_weights_.post_decoder_embedding.kernel = get_ptr<T>(weights_[14 * layer_num_ + 3]);
+        captured_weights.push_back(weights_[14 * layer_num_]);
+        captured_weights.push_back(weights_[14 * layer_num_ + 1]);
+        captured_weights.push_back(weights_[14 * layer_num_ + 2]);
+        captured_weights.push_back(weights_[14 * layer_num_ + 3]);
 
         Llama_weights_.setMaxSeqLen(max_seq_len);
 
         ft::check_cuda_error(cudaGetDeviceProperties(&prop_, 0));
+        weights_ = captured_weights;
     }
 
     ~FTLlama() override
