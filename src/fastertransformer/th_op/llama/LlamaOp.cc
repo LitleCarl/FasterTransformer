@@ -15,7 +15,10 @@
  */
 
 #include "src/fastertransformer/th_op/llama/LlamaOp.h"
-
+#include <torch/script.h>
+#include <torch/extension.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/functional.h>
 namespace th = torch;
 namespace ft = fastertransformer;
 namespace torch_ext {
@@ -116,7 +119,8 @@ std::vector<th::Tensor> LlamaOp::forward(th::Tensor               input_ids,
                                            th::optional<th::Tensor> len_penalty_opt,
                                            th::optional<th::Tensor> repetition_penalty_opt,
                                            th::optional<th::Tensor> random_seed_opt,
-                                           th::optional<int64_t>    return_cum_log_probs_opt)
+                                           th::optional<int64_t>    return_cum_log_probs_opt,
+                                           Callback_t callback)
 {
     CHECK_TH_CUDA(input_ids);
     CHECK_CONTIGUOUS(input_ids);
@@ -158,7 +162,7 @@ std::vector<th::Tensor> LlamaOp::forward(th::Tensor               input_ids,
                    len_penalty_opt,
                    repetition_penalty_opt,
                    random_seed_opt,
-                   return_cum_log_probs_opt);
+                   return_cum_log_probs_opt, callback);
     if (return_cum_log_probs > 0) {
         return std::vector<th::Tensor>{output_ids, sequence_lengths, cum_log_probs};
     }
@@ -167,24 +171,45 @@ std::vector<th::Tensor> LlamaOp::forward(th::Tensor               input_ids,
 
 }  // namespace torch_ext
 
-static auto fasterTransformerLlamaTHS =
-#ifdef LEGACY_THS
-    torch::jit::class_<torch_ext::LlamaOp>("FasterTransformerLlamaOp")
-#else
-    torch::jit::class_<torch_ext::LlamaOp>("FasterTransformer", "LlamaOp")
-#endif
-        .def(torch::jit::init<int64_t,
-                              int64_t,
-                              int64_t,
-                              int64_t,
-                              int64_t,
-                              int64_t,
-                              double,
-                              int64_t,
-                              int64_t,
-                              int64_t,
-                              int64_t,
-                              int64_t,
-                              bool,
-                              std::vector<th::Tensor>, int64_t>())
+namespace py = pybind11;
+
+PYBIND11_MODULE(libth_transformer, m) {
+    py::class_<torch_ext::LlamaOp>(m, "LlamaOp")
+        .def(py::init<int64_t,
+                        int64_t,
+                        int64_t,
+                        int64_t,
+                        int64_t,
+                        int64_t,
+                        double,
+                        int64_t,
+                        int64_t,
+                        int64_t,
+                        int64_t,
+                        int64_t,
+                        bool,
+                        std::vector<th::Tensor>, int64_t>())
         .def("forward", &torch_ext::LlamaOp::forward);
+}
+
+// static auto fasterTransformerLlamaTHS =
+// #ifdef LEGACY_THS
+//     torch::jit::class_<torch_ext::LlamaOp>("FasterTransformerLlamaOp")
+// #else
+//     torch::jit::class_<torch_ext::LlamaOp>("FasterTransformer", "LlamaOp")
+// #endif
+//         .def(torch::jit::init<int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               double,
+//                               int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               int64_t,
+//                               bool,
+//                               std::vector<th::Tensor>, int64_t>())
+//         .def("forward", &torch_ext::LlamaOp::forward);

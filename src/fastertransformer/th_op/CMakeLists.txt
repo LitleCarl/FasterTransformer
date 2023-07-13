@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+find_package(pybind11 CONFIG REQUIRED)
 
 add_definitions(-DTORCH_CUDA=1)
-
+find_library(TORCH_PYTHON_LIBRARY torch_python PATHS "${TORCH_INSTALL_PREFIX}/lib")
 add_library(th_utils STATIC th_utils.cu)
 set_property(TARGET th_utils PROPERTY POSITION_INDEPENDENT_CODE  ON)
 set_property(TARGET th_utils PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS  ON)
@@ -52,7 +53,7 @@ add_library(th_transformer SHARED
             $<TARGET_OBJECTS:th_utils>
             $<TARGET_OBJECTS:th_vit>
 )
-target_link_libraries(th_transformer PUBLIC "${TORCH_LIBRARIES}"
+target_link_libraries(th_transformer PUBLIC "${TORCH_LIBRARIES}" 
                       th_bart
                       th_bert
                       th_common
@@ -69,6 +70,8 @@ target_link_libraries(th_transformer PUBLIC "${TORCH_LIBRARIES}"
                       th_t5
                       th_utils
                       th_vit
+                      pybind11::embed
+                      ${TORCH_PYTHON_LIBRARY}
 )
 
 if(ENABLE_FP8)

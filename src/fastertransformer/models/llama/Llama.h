@@ -18,7 +18,7 @@
 
 #include <cstddef>
 #include <vector>
-
+#include <functional>
 #include "src/fastertransformer/layers/DynamicDecodeLayer.h"
 #include "src/fastertransformer/models/llama/LlamaContextDecoder.h"
 #include "src/fastertransformer/models/llama/LlamaDecoder.h"
@@ -219,9 +219,10 @@ public:
 
     void forward(std::unordered_map<std::string, Tensor>*       output_tensors,
                  const std::unordered_map<std::string, Tensor>* input_tensors,
-                 const LlamaWeight<T>*                          gpt_weights);
+                 const LlamaWeight<T>*                          gpt_weights,
+                 std::function<void(std::unordered_map<std::string, Tensor>*)> callback = nullptr);
 
-    size_t getPipelineParallelRank();
+   size_t getPipelineParallelRank();
     size_t getPipelineParallelSize();
     size_t getTensorParallelRank();
     size_t getTensorParallelSize();

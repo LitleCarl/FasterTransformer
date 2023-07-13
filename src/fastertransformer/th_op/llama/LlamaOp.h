@@ -28,10 +28,13 @@
 #include <string>
 #include <random>
 #include <sstream>
+#include <functional>
 #include <algorithm>
 namespace ft = fastertransformer;
 namespace th = torch;
 namespace torch_ext {
+
+using Callback_t = std::function<void(th::Tensor, th::Tensor)>;
 
 using std::vector;
 
@@ -52,108 +55,9 @@ public:
                          th::optional<th::Tensor> len_penalty_opt,
                          th::optional<th::Tensor> repetition_penalty_opt,
                          th::optional<th::Tensor> random_seed_opt,
-                         th::optional<int64_t>    return_cum_log_probs_opt) = 0;
+                         th::optional<int64_t>    return_cum_log_probs_opt,
+                         std::function<void(th::Tensor, th::Tensor)> callback) = 0;
 };
-
-class MappedFile {
-public:
-    MappedFile(const std::string& file_path, size_t buffer_size)
-        : file_descriptor_(open(file_path.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR)),
-          buffer_size_(buffer_size), buffer_(nullptr) {
-
-        if (file_descriptor_ == -1) {
-            throw std::runtime_error("Failed to open the file");
-        }
-
-        // Extend the file size to the desired buffer size
-        if (lseek(file_descriptor_, buffer_size_ - 1, SEEK_SET) == -1) {
-            throw std::runtime_error("Failed to extend the file");
-        }
-        if (write(file_descriptor_, "", 1) == -1) {
-            throw std::runtime_error("Failed to write to the file");
-        }
-
-        // Map the file into memory
-        buffer_ = mmap(nullptr, buffer_size_, PROT_READ | PROT_WRITE, MAP_SHARED, file_descriptor_, 0);
-        if (buffer_ == MAP_FAILED) {
-            throw std::runtime_error("Failed to map the file into memory");
-        }
-    }
-
-    void Sync() const {
-        if (msync(buffer_, buffer_size_, MS_SYNC) == -1) {
-            throw std::runtime_error("Failed to sync changes to the file");
-        }
-    }
-
-    ~MappedFile() {
-        if (munmap(buffer_, buffer_size_) == -1) {
-            std::cerr << "Failed to unmap the file from memory" << std::endl;
-        }
-        close(file_descriptor_);
-    }
-
-    void* GetBuffer() const {
-        return buffer_;
-    }
-
-private:
-    int file_descriptor_;
-    size_t buffer_size_;
-    void* buffer_;
-};
-
-
-// namespace uuid {
-//     static std::random_device              rd;
-//     static std::mt19937                    gen(rd());
-//     static std::uniform_int_distribution<> dis(0, 15);
-//     static std::uniform_int_distribution<> dis2(8, 11);
-
-//     std::string generate_uuid_v4() {
-//         std::stringstream ss;
-//         int i;
-//         ss << std::hex;
-//         for (i = 0; i < 8; i++) {
-//             ss << dis(gen);
-//         }
-//         ss << "-";
-//         for (i = 0; i < 4; i++) {
-//             ss << dis(gen);
-//         }
-//         ss << "-4";
-//         for (i = 0; i < 3; i++) {
-//             ss << dis(gen);
-//         }
-//         ss << "-";
-//         ss << dis2(gen);
-//         for (i = 0; i < 3; i++) {
-//             ss << dis(gen);
-//         }
-//         ss << "-";
-//         for (i = 0; i < 12; i++) {
-//             ss << dis(gen);
-//         };
-//         return ss.str();
-//     }
-// }
-std::string get_uuid() {
-    static std::random_device dev;
-    static std::mt19937 rng(dev());
-
-    std::uniform_int_distribution<int> dist(0, 15);
-
-    const char *v = "0123456789abcdef";
-    const bool dash[] = { 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0 };
-
-    std::string res;
-    for (int i = 0; i < 16; i++) {
-        if (dash[i]) res += "-";
-        res += v[dist(rng)];
-        res += v[dist(rng)];
-    }
-    return res;
-}
 
 template<typename T>
 class FTLlama: public IFLlama {
@@ -371,7 +275,8 @@ public:
                  th::optional<th::Tensor> len_penalty_opt,
                  th::optional<th::Tensor> repetition_penalty_opt,
                  th::optional<th::Tensor> random_seed_opt,
-                 th::optional<int64_t>    return_cum_log_probs_opt) override
+                 th::optional<int64_t>    return_cum_log_probs_opt,
+                 std::function<void(th::Tensor, th::Tensor)> callback) override
     {
         int return_cum_log_probs = return_cum_log_probs_opt.has_value() ? (int)return_cum_log_probs_opt.value() : 0;
 
@@ -430,7 +335,8 @@ public:
                                           attention_type,  // attention_type
 					                      int8_mode_,		       // int8 mode
                                           nullptr,         // custom_all_reduce_comm
-                                          0);              // enable_custom_all_reduce
+                                          0               // enable_custom_all_reduce
+                                          );
 
         std::vector<uint32_t> output_seq_len(request_batch_size, total_output_len);
 
@@ -498,19 +404,19 @@ public:
         }
 
         try {
-            llama.forward(&output_tensors, &input_tensors, &Llama_weights_);
+            llama.forward(&output_tensors, &input_tensors, &Llama_weights_, [&](auto x){
+                if (callback) {
+                    callback(output_ids, sequence_lengths);
+                }
+            });
         }
         catch (std::runtime_error& error) {
             std::cout << error.what();
-            exit(-1);
         }
-	catch(const std::exception& e) {
+	    catch(const std::exception& e) {
         	std::cout << "Caught exception \"" << e.what() << "\"\n";
     	}
-//catch (...) {
-  //        std::cout << "Runtime error";
-    //       exit(-1);
-      //  }
+
     }
 
 private:
@@ -577,7 +483,8 @@ public:
                                th::optional<th::Tensor> len_penalty_opt,
                                th::optional<th::Tensor> repetition_penalty_opt,
                                th::optional<th::Tensor> random_seed_opt,
-                               th::optional<int64_t>    return_cum_log_probs_opt);
+                               th::optional<int64_t>    return_cum_log_probs_opt,
+                               Callback_t callback);
 
 private:
     const at::ScalarType    st_;

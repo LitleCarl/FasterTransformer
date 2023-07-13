@@ -74,16 +74,16 @@ void Llama<T>::initialize()
                                                           cuda_device_prop_);
 
     // parse env overrides
-    if (std::getenv("LLAMA_STREAM_CB_STEP") != nullptr) {
+    if (std::getenv("LEPTON_STREAM_CB_STEP") != nullptr) {
         try {
             int callback_step_from_env = stoi(
-                std::string(std::getenv("LLAMA_STREAM_CB_STEP"))
+                std::string(std::getenv("LEPTON_STREAM_CB_STEP"))
                 );
             token_generated_cb_step_ = callback_step_from_env;
-            FT_LOG_INFO("Override stream callback step to %d from LLAMA_STREAM_CB_STEP",
+            FT_LOG_INFO("Override stream callback step to %d from LEPTON_STREAM_CB_STEP",
                 token_generated_cb_step_);
         } catch (...) {
-            FT_LOG_WARNING("convert LLAMA_STREAM_CB_STEP err, use default value %d",
+            FT_LOG_WARNING("convert LEPTON_STREAM_CB_STEP err, use default value %d",
                 token_generated_cb_step_);
         }
     }
@@ -426,7 +426,8 @@ void Llama<T>::forward(std::vector<Tensor>*       output_tensors,
 template<typename T>
 void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_tensors,
                          const std::unordered_map<std::string, Tensor>* input_tensors,
-                         const LlamaWeight<T>*                        gpt_weights)
+                         const LlamaWeight<T>*                        gpt_weights,
+                         std::function<void(std::unordered_map<std::string, Tensor>*)> callback)
 {
     // input_tensors:
     //      input_ids [batch_size, max_input_length]
@@ -654,7 +655,6 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
                             stream_);
         sync_check_cuda_error();
 
-	std::cout << "CJX: " << gpt_weights->position_encoding_table <<std::endl;
         if (has_prefix_soft_prompt_) {
             inputIdsEmbeddingLookupPosEncodingSoftPromptParam<T> param;
             param.from_tensor                   = context_decoder_input_buf_;
@@ -1092,12 +1092,17 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
         if (*generation_should_stop_) {
             break;
         }
-        if (token_generated_cb_ && (step + 1) % token_generated_cb_step_ == 0  && step + 1 < (int)max_output_seq_len) {
+        if ((step + 1) % token_generated_cb_step_ == 0  && step + 1 < (int)max_output_seq_len) {
             setOutputTensors(output_tensors, input_tensors, max_input_length, max_output_seq_len);
             sendTensorsToFirstPipelineNode(output_tensors, input_tensors);
-
+           
             if (pipeline_para_.rank_ == 0 && tensor_para_.rank_ == 0) {
-                token_generated_cb_(output_tensors, token_generated_ctx_);
+                if (token_generated_cb_) {
+                    token_generated_cb_(output_tensors, token_generated_ctx_);
+                }
+                if (nullptr != callback) {
+                    callback(output_tensors);
+                }
             }
         }
         if (step == max_input_length) {
