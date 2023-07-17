@@ -76,6 +76,7 @@ public:
             const size_t             max_seq_len,
             const bool               use_gptj_residual,
             const vector<th::Tensor> weights, 
+            const vector<th::Tensor> scales, 
             const int64_t  int8_mode):
         head_num_(head_num),
         size_per_head_(size_per_head),
@@ -150,58 +151,83 @@ public:
             }
 
             if (int8_mode_ != 0) {
-                // Alloc FFN and Attention int8 weights
-                ft::deviceMalloc(&int8_weights_ptr_[i][0], hidden_units * 3 * hidden_units / tensor_para_size_);
-                ft::deviceMalloc(&int8_weights_ptr_[i][1], hidden_units / tensor_para_size_ * hidden_units);
-                ft::deviceMalloc(&int8_weights_ptr_[i][2], hidden_units * inter_size_ / tensor_para_size_);
-                ft::deviceMalloc(&int8_weights_ptr_[i][3], hidden_units * inter_size_ / tensor_para_size_);
-                ft::deviceMalloc(&int8_weights_ptr_[i][4], inter_size_ / tensor_para_size_ * hidden_units);
+                auto compute_n_bytes = [&](size_t m, size_t n) -> size_t {
+                    if (int8_mode_ == 1) {
+                        return m * n;
+                    } else if (int8_mode_ == 101) {
+                        return m * (size_t)(std::ceil(n * 0.5));
+                    } else {
+                       throw std::runtime_error("int_mode is neither 1 or 101.");
+                    }
+                };
+                // Alloc FFN and Attention int weights
+                ft::deviceMalloc(&int8_weights_ptr_[i][0], compute_n_bytes(hidden_units, 3 * hidden_units / tensor_para_size_));
+                ft::deviceMalloc(&int8_weights_ptr_[i][1], compute_n_bytes(hidden_units / tensor_para_size_, hidden_units));
+                ft::deviceMalloc(&int8_weights_ptr_[i][2], compute_n_bytes(hidden_units, inter_size_ / tensor_para_size_));
+                ft::deviceMalloc(&int8_weights_ptr_[i][3], compute_n_bytes(hidden_units, inter_size_ / tensor_para_size_));
+                ft::deviceMalloc(&int8_weights_ptr_[i][4], compute_n_bytes(inter_size_ / tensor_para_size_, hidden_units));
+                
+                // Alloc scales for weight only quant for attention and FFN weights
+                ft::deviceMalloc(&weight_only_scale_ptr_[i][0], 3 * hidden_units / tensor_para_size_);
+                ft::deviceMalloc(&weight_only_scale_ptr_[i][1], hidden_units);
+                ft::deviceMalloc(&weight_only_scale_ptr_[i][2], inter_size_ / tensor_para_size_);
+                ft::deviceMalloc(&weight_only_scale_ptr_[i][3], inter_size_ / tensor_para_size_);
+                ft::deviceMalloc(&weight_only_scale_ptr_[i][4], hidden_units);
+                
                 if (int8_mode_ == 1) {
-                    // Alloc scales for weight only quant for attention and FFN weights
-                    ft::deviceMalloc(&weight_only_scale_ptr_[i][0], 3 * hidden_units / tensor_para_size_);
-                    ft::deviceMalloc(&weight_only_scale_ptr_[i][1], hidden_units);
-                    ft::deviceMalloc(&weight_only_scale_ptr_[i][2], inter_size_ / tensor_para_size_);
-                    ft::deviceMalloc(&weight_only_scale_ptr_[i][3], inter_size_ / tensor_para_size_);
-                    ft::deviceMalloc(&weight_only_scale_ptr_[i][4], hidden_units);
-                }
-                // TODO:cjx 
-                ft::FtCudaDataType dtype = ft::FtCudaDataType::FP16;
+                    // TODO:cjx 
+                    ft::FtCudaDataType dtype = ft::FtCudaDataType::FP16;
 
-                auto tensor = weights_[i + 2 * layer_num_].to(torch::kCPU);
-                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][0],
-                                                        weight_only_scale_ptr_[i][0],
-                                                        {(size_t)hidden_units, (size_t)(3 * hidden_units / tensor_para_size_)},
+                    auto tensor = weights_[i + 2 * layer_num_].to(torch::kCPU);
+                    ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][0],
+                                                            weight_only_scale_ptr_[i][0],
+                                                            {(size_t)hidden_units, (size_t)(3 * hidden_units / tensor_para_size_)},
+                                                            get_ptr<T>(tensor),
+                                                            dtype);
+                    
+                    tensor = weights_[i + 4 * layer_num_].to(torch::kCPU);
+                    ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][1],
+                                                        weight_only_scale_ptr_[i][1],
+                                                        {(size_t)(hidden_units / tensor_para_size_), (size_t)hidden_units},
                                                         get_ptr<T>(tensor),
                                                         dtype);
                 
-                tensor = weights_[i + 4 * layer_num_].to(torch::kCPU);
-                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][1],
-                                                     weight_only_scale_ptr_[i][1],
-                                                     {(size_t)(hidden_units / tensor_para_size_), (size_t)hidden_units},
-                                                     get_ptr<T>(tensor),
-                                                     dtype);
-            
-                tensor = weights_[i + 6 * layer_num_].to(torch::kCPU);
-                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][2],
-                                                     weight_only_scale_ptr_[i][2],
-                                                    {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
-                                                     get_ptr<T>(tensor),
-                                                     dtype);
-            
-                tensor = weights_[i + 8 * layer_num_].to(torch::kCPU); 
-                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][3],
-                                                     weight_only_scale_ptr_[i][3],
-                                                    {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
-                                                     get_ptr<T>(tensor),
-                                                     dtype);
-                tensor = weights_[i + 10 * layer_num_].to(torch::kCPU);
-                ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][4],
-                                                     weight_only_scale_ptr_[i][4],
-                                                    {(size_t)(inter_size_ / tensor_para_size_), (size_t)hidden_units},
-                                                     get_ptr<T>(tensor),
-                                                     dtype);
+                    tensor = weights_[i + 6 * layer_num_].to(torch::kCPU);
+                    ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][2],
+                                                        weight_only_scale_ptr_[i][2],
+                                                        {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
+                                                        get_ptr<T>(tensor),
+                                                        dtype);
                 
-                
+                    tensor = weights_[i + 8 * layer_num_].to(torch::kCPU); 
+                    ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][3],
+                                                        weight_only_scale_ptr_[i][3],
+                                                        {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
+                                                        get_ptr<T>(tensor),
+                                                        dtype);
+                    tensor = weights_[i + 10 * layer_num_].to(torch::kCPU);
+                    ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][4],
+                                                        weight_only_scale_ptr_[i][4],
+                                                        {(size_t)(inter_size_ / tensor_para_size_), (size_t)hidden_units},
+                                                        get_ptr<T>(tensor),
+                                                        dtype);
+                }
+                else if (int8_mode_ == 101) {
+                    constexpr int idxs[5] = {2, 4, 6, 8, 10};
+                    int j = 0;
+                    for (auto& idx : idxs) {
+                        auto tensor = weights_[i + idx * layer_num_];
+                        auto scale = scales[i + idx * layer_num_];
+                        // Copy data into ptr
+                        std::cout << "j: "<< j << ", :" << scale.numel() << std::endl;
+                        cudaMemcpy(int8_weights_ptr_[i][j], get_ptr<T>(tensor), tensor.numel() * sizeof(int32_t), cudaMemcpyDeviceToDevice);
+                        cudaMemcpy(weight_only_scale_ptr_[i][j], get_ptr<T>(scale), scale.numel() * sizeof(T), cudaMemcpyDeviceToDevice);
+                        j++;
+                    }
+                } else {
+                    throw std::runtime_error("Int mode is not supported.");
+                }
+
                 Llama_weights_.decoder_layer_weights[i]->self_attention_weights.query_weight.int8_kernel = int8_weights_ptr_[i][0]; 
                 Llama_weights_.decoder_layer_weights[i]->self_attention_weights.attention_output_weight.int8_kernel = int8_weights_ptr_[i][1]; 
                 Llama_weights_.decoder_layer_weights[i]->ffn_weights.intermediate_weight.int8_kernel = int8_weights_ptr_[i][2];
@@ -468,6 +494,7 @@ public:
             const int64_t            max_seq_len,
             const bool               use_gptj_residual,
             const vector<th::Tensor> weights,
+            const vector<th::Tensor> scales,
             const int64_t int8_mode);
 
     ~LlamaOp();

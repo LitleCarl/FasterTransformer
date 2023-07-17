@@ -37,6 +37,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                      const int64_t            max_seq_len,
                      const bool               use_gptj_residual,
                      const vector<th::Tensor> weights,
+                     const vector<th::Tensor> scales,
                      const int64_t            int8_mode
                      ):
 
@@ -62,6 +63,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                          (size_t)max_seq_len,
                                          use_gptj_residual,
                                          weights,
+                                         scales,
                                          (int64_t)int8_mode);
             break;
         case at::ScalarType::Half:
@@ -79,6 +81,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         (size_t)max_seq_len,
                                         use_gptj_residual,
                                         weights,
+                                        scales,
                                         (int64_t)int8_mode);
             break;
 	case at::ScalarType::BFloat16:
@@ -96,6 +99,7 @@ LlamaOp::LlamaOp(const int64_t                head_num,
                                         (size_t)max_seq_len,
                                         use_gptj_residual,
                                         weights,
+                                        scales,
                                         (int64_t)int8_mode);
             break;
         default:
@@ -188,7 +192,7 @@ PYBIND11_MODULE(libth_transformer, m) {
                         int64_t,
                         int64_t,
                         bool,
-                        std::vector<th::Tensor>, int64_t>())
+                        std::vector<th::Tensor>, std::vector<th::Tensor>, int64_t>())
         .def("forward", &torch_ext::LlamaOp::forward);
 }
 
