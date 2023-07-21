@@ -321,11 +321,11 @@ public:
         ///< initial value of accumulator
         FragmentC const& src_accum)
     {
-
+        
         //
         // Prologue
         //
-
+        
         TransformBAfterLDS lds_converter;
 
         // NOTE - switch to ldg.sts

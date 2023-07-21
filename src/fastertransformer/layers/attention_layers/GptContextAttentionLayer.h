@@ -21,6 +21,7 @@
 #include "src/fastertransformer/kernels/cutlass_kernels/fpA_intB_gemm/fpA_intB_gemm.h"
 #include "src/fastertransformer/kernels/cutlass_kernels/int8_gemm/int8_gemm.h"
 #include "src/fastertransformer/layers/attention_layers/BaseAttentionLayer.h"
+#include "cutlass_extensions/gemm/kernel/mixed_gemm_B_layout.h"
 
 namespace fastertransformer {
 
@@ -55,6 +56,7 @@ private:
     bool is_qk_buf_float_;
 
     std::shared_ptr<CutlassFpAIntBGemmRunner<T, uint8_t>> weight_only_int8_fc_runner_;
+    std::shared_ptr<CutlassFpAIntBGemmRunner<T, cutlass::uint4b_t>> weight_only_int4_fc_runner_;
     std::shared_ptr<CutlassInt8GemmRunner<T>>             int8_fc_runner_;
 
 protected:

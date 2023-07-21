@@ -244,7 +244,6 @@ public:
         FragmentA     tb_frag_A;
         FragmentB     tb_frag_B;
         FragmentScale tb_frag_scales;
-
         using WarpFragmentScale = typename Dequantizer::FragmentScale;
         WarpFragmentScale warp_frag_scales;
 

@@ -17,6 +17,7 @@
 #include "src/fastertransformer/layers/FfnLayer.h"
 #include "src/fastertransformer/kernels/transpose_int8_kernels.h"
 #include "src/fastertransformer/utils/nvtx_utils.h"
+#include "cutlass_extensions/gemm/kernel/mixed_gemm_B_layout.h"
 
 namespace fastertransformer {
 
@@ -248,6 +249,59 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
                 }
             }
         }
+        else if (int8_mode_ == 101) {
+            FT_CHECK_WITH_INFO(weight_only_int4_fc_runner_.get() != NULL, "weight only runner was not initialized.");
+            FT_CHECK(ffn_weights->intermediate_weight.int8_kernel != NULL
+                     && ffn_weights->intermediate_weight.weight_only_quant_scale != NULL);
+
+            if (ia3_tasks == nullptr && !use_gated_activation) {
+                // launch fused GEMM + activation
+                weight_only_int4_fc_runner_->gemm_bias_act(
+                    input_tensor,
+                    reinterpret_cast<const cutlass::uint4b_t*>(ffn_weights->intermediate_weight.int8_kernel),
+                    ffn_weights->intermediate_weight.weight_only_quant_scale,
+                    ffn_weights->intermediate_weight.bias,
+                    inter_buf_,
+                    m,
+                    inter_size_,
+                    hidden_units_,
+                    activation_type,
+                    mixed_gemm_workspace_,
+                    mixed_gemm_ws_bytes_,
+                    stream_);
+            }
+            else {
+                // Otherwise, let FT handle activation
+                weight_only_int4_fc_runner_->gemm(
+                    input_tensor,
+                    reinterpret_cast<const cutlass::uint4b_t*>(ffn_weights->intermediate_weight.int8_kernel),
+                    ffn_weights->intermediate_weight.weight_only_quant_scale,
+                    inter_buf_,
+                    m,
+                    inter_size_,
+                    hidden_units_,
+                    mixed_gemm_workspace_,
+                    mixed_gemm_ws_bytes_,
+                    stream_);
+
+                if (use_gated_activation) {
+                    FT_CHECK(ffn_weights->intermediate_weight2.int8_kernel != NULL
+                             && ffn_weights->intermediate_weight2.weight_only_quant_scale != NULL);
+
+                    weight_only_int4_fc_runner_->gemm(
+                        input_tensor,
+                        reinterpret_cast<const cutlass::uint4b_t*>(ffn_weights->intermediate_weight2.int8_kernel),
+                        ffn_weights->intermediate_weight2.weight_only_quant_scale,
+                        inter_buf_2_,
+                        m,
+                        inter_size_,
+                        hidden_units_,
+                        mixed_gemm_workspace_,
+                        mixed_gemm_ws_bytes_,
+                        stream_);
+                }
+            }
+        }
         else if (int8_mode_ == 2) {
             FT_CHECK(!use_gated_activation);
             cublas_wrapper_->Int8Gemm(inter_size_,
@@ -342,6 +396,21 @@ void FfnLayer<T>::forward(TensorMap* output_tensors, TensorMap* input_tensors, c
                                               mixed_gemm_ws_bytes_,
                                               stream_);
         }
+        else if (int8_mode_ == 101) {
+            FT_CHECK_WITH_INFO(weight_only_int4_fc_runner_.get() != NULL, "weight only runner was not initialized.");
+            FT_CHECK(ffn_weights->output_weight.int8_kernel != NULL
+                     && ffn_weights->output_weight.weight_only_quant_scale != NULL);
+            weight_only_int4_fc_runner_->gemm(inter_buf_,
+                                              reinterpret_cast<const cutlass::uint4b_t*>(ffn_weights->output_weight.int8_kernel),
+                                              ffn_weights->output_weight.weight_only_quant_scale,
+                                              output_tensor,
+                                              m,
+                                              hidden_units_,
+                                              inter_size_,
+                                              mixed_gemm_workspace_,
+                                              mixed_gemm_ws_bytes_,
+                                              stream_);
+        }
         else if (int8_mode_ == 2) {
             int8_fc_runner_->gemm(reinterpret_cast<int8_t*>(inter_buf_),
                                   ffn_weights->output_weight.int8_kernel,
@@ -413,6 +482,9 @@ FfnLayer<T>::FfnLayer(size_t           max_batch_size,
         FT_CHECK_WITH_INFO(!(std::is_same<T, float>::value), "Weight only quant not supported for fp32.");
         moe_int8_weight_only_fc_runner_ = std::make_shared<CutlassMoeFCRunner<T, uint8_t>>();
         weight_only_int8_fc_runner_     = std::make_shared<CutlassFpAIntBGemmRunner<T, uint8_t>>();
+    } else if (int8_mode_ == 101) {
+        FT_CHECK_WITH_INFO(!(std::is_same<T, float>::value), "Weight only quant not supported for fp32.");
+        weight_only_int4_fc_runner_     = std::make_shared<CutlassFpAIntBGemmRunner<T, cutlass::uint4b_t>>();
     }
 }
 
@@ -436,6 +508,7 @@ FfnLayer<T>::FfnLayer(FfnLayer<T> const& ffn_layer):
     moe_fc_runner_(ffn_layer.moe_fc_runner_),
     moe_int8_weight_only_fc_runner_(ffn_layer.moe_int8_weight_only_fc_runner_),
     weight_only_int8_fc_runner_(ffn_layer.weight_only_int8_fc_runner_),
+    weight_only_int4_fc_runner_(ffn_layer.weight_only_int4_fc_runner_),
     int8_fc_runner_(ffn_layer.int8_fc_runner_)
 {
     FT_LOG_DEBUG(__PRETTY_FUNCTION__);
@@ -494,11 +567,20 @@ void FfnLayer<T>::allocateBuffer(size_t token_num, int moe_k, bool use_moe)
             mixed_gemm_ws_bytes_  = weight_only_int8_fc_runner_->getWorkspaceSize(token_num, max_size, max_size);
             mixed_gemm_workspace_ = (char*)allocator_->reMalloc(mixed_gemm_workspace_, mixed_gemm_ws_bytes_, false);
         }
+        else if (int8_mode_ == 101) {
+            FT_CHECK_WITH_INFO(weight_only_int4_fc_runner_.get() != NULL, "weight only runner was not initialized.");
+            // We use max_size for n and k since we reuse buffers for both FCs and want to allocate the max
+            // possible memory that would be required by any of the individual gemms.
+            const int max_size    = std::max(hidden_units_, inter_size_);
+            mixed_gemm_ws_bytes_  = weight_only_int4_fc_runner_->getWorkspaceSize(token_num, max_size, max_size);
+            mixed_gemm_workspace_ = (char*)allocator_->reMalloc(mixed_gemm_workspace_, mixed_gemm_ws_bytes_, false);
+        }
         else if (int8_mode_ == 2) {
             const int max_size   = std::max(hidden_units_, inter_size_);
             int8_gemm_ws_bytes_  = int8_fc_runner_->getWorkspaceSize(token_num, max_size, max_size);
             int8_gemm_workspace_ = (char*)allocator_->reMalloc(int8_gemm_workspace_, int8_gemm_ws_bytes_, false);
         }
+        
     }
 
     is_allocate_buffer_ = true;

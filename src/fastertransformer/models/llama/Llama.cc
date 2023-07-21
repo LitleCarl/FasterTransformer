@@ -427,7 +427,8 @@ template<typename T>
 void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_tensors,
                          const std::unordered_map<std::string, Tensor>* input_tensors,
                          const LlamaWeight<T>*                        gpt_weights,
-                         std::function<void(std::unordered_map<std::string, Tensor>*)> callback)
+                         std::function<void(std::unordered_map<std::string, Tensor>*)> callback,
+                         std::function<void(void*)> last_hidden_state_callback)
 {
     // input_tensors:
     //      input_ids [batch_size, max_input_length]
@@ -759,6 +760,10 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
                                  beam_width,
                                  max_input_length - 1,
                                  stream_);
+        // callback for embedding
+        if (last_hidden_state_callback) {
+            last_hidden_state_callback(context_decoder_output_buf_);
+        }
         sync_check_cuda_error();
     }
     else if (max_input_length == 0) {

@@ -28,6 +28,7 @@
 #include "src/fastertransformer/utils/memory_utils.h"
 #include <stdint.h>
 #include <vector>
+#include "cutlass_extensions/gemm/kernel/mixed_gemm_B_layout.h"
 
 namespace fastertransformer {
 
@@ -52,6 +53,7 @@ private:
     std::shared_ptr<CutlassMoeFCRunner<T, uint8_t>> moe_int8_weight_only_fc_runner_;
 
     std::shared_ptr<CutlassFpAIntBGemmRunner<T, uint8_t>> weight_only_int8_fc_runner_;
+    std::shared_ptr<CutlassFpAIntBGemmRunner<T, cutlass::uint4b_t>> weight_only_int4_fc_runner_;
     std::shared_ptr<CutlassInt8GemmRunner<T>>             int8_fc_runner_;
 
     void allocateBuffer() override;

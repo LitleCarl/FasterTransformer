@@ -35,6 +35,7 @@ namespace th = torch;
 namespace torch_ext {
 
 using Callback_t = std::function<void(th::Tensor, th::Tensor)>;
+using HiddenStateCallback_t = std::function<void(th::Tensor)>;
 
 using std::vector;
 
@@ -56,7 +57,8 @@ public:
                          th::optional<th::Tensor> repetition_penalty_opt,
                          th::optional<th::Tensor> random_seed_opt,
                          th::optional<int64_t>    return_cum_log_probs_opt,
-                         std::function<void(th::Tensor, th::Tensor)> callback) = 0;
+                         std::function<void(th::Tensor, th::Tensor)> callback,
+                         std::function<void(th::Tensor)> last_hidden_state_callback) = 0;
 };
 
 template<typename T>
@@ -149,8 +151,7 @@ public:
                 captured_weights.push_back(weights_[i + 8 * layer_num_]);
                 captured_weights.push_back(weights_[i + 10 * layer_num_]);
             }
-
-            if (int8_mode_ != 0) {
+            else {
                 auto compute_n_bytes = [&](size_t m, size_t n) -> size_t {
                     if (int8_mode_ == 1) {
                         return m * n;
@@ -177,52 +178,76 @@ public:
                 if (int8_mode_ == 1) {
                     // TODO:cjx 
                     ft::FtCudaDataType dtype = ft::FtCudaDataType::FP16;
+                    ft::QuantType qtype = ft::QuantType::INT8_WEIGHT_ONLY;
 
                     auto tensor = weights_[i + 2 * layer_num_].to(torch::kCPU);
                     ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][0],
                                                             weight_only_scale_ptr_[i][0],
                                                             {(size_t)hidden_units, (size_t)(3 * hidden_units / tensor_para_size_)},
                                                             get_ptr<T>(tensor),
-                                                            dtype);
+                                                            dtype,
+                                                            qtype);
                     
                     tensor = weights_[i + 4 * layer_num_].to(torch::kCPU);
                     ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][1],
                                                         weight_only_scale_ptr_[i][1],
                                                         {(size_t)(hidden_units / tensor_para_size_), (size_t)hidden_units},
                                                         get_ptr<T>(tensor),
-                                                        dtype);
+                                                        dtype,
+                                                        qtype);
                 
                     tensor = weights_[i + 6 * layer_num_].to(torch::kCPU);
                     ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][2],
                                                         weight_only_scale_ptr_[i][2],
                                                         {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
                                                         get_ptr<T>(tensor),
-                                                        dtype);
+                                                        dtype,
+                                                        qtype);
                 
                     tensor = weights_[i + 8 * layer_num_].to(torch::kCPU); 
                     ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][3],
                                                         weight_only_scale_ptr_[i][3],
                                                         {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
                                                         get_ptr<T>(tensor),
-                                                        dtype);
+                                                        dtype,
+                                                        qtype);
                     tensor = weights_[i + 10 * layer_num_].to(torch::kCPU);
                     ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][4],
                                                         weight_only_scale_ptr_[i][4],
                                                         {(size_t)(inter_size_ / tensor_para_size_), (size_t)hidden_units},
                                                         get_ptr<T>(tensor),
-                                                        dtype);
+                                                        dtype,
+                                                        qtype);
                 }
                 else if (int8_mode_ == 101) {
+                    ft::QuantType qtype = ft::QuantType::PACKED_INT4_WEIGHT_ONLY;
+                    ft::FtCudaDataType dtype = ft::FtCudaDataType::FP16;
                     constexpr int idxs[5] = {2, 4, 6, 8, 10};
+                    const std::vector<std::vector<size_t>> shapes = {
+                        {(size_t)hidden_units, (size_t)(3 * hidden_units / tensor_para_size_)},
+                        {(size_t)(hidden_units / tensor_para_size_), (size_t)hidden_units},
+                       {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)},
+                       {(size_t)hidden_units, (size_t)(inter_size_ / tensor_para_size_)}, 
+                       {(size_t)(inter_size_ / tensor_para_size_), (size_t)hidden_units}
+                    };
                     int j = 0;
                     for (auto& idx : idxs) {
-                        auto tensor = weights_[i + idx * layer_num_];
-                        auto scale = scales[i + idx * layer_num_];
-                        // Copy data into ptr
-                        std::cout << "j: "<< j << ", :" << scale.numel() << std::endl;
-                        cudaMemcpy(int8_weights_ptr_[i][j], get_ptr<T>(tensor), tensor.numel() * sizeof(int32_t), cudaMemcpyDeviceToDevice);
-                        cudaMemcpy(weight_only_scale_ptr_[i][j], get_ptr<T>(scale), scale.numel() * sizeof(T), cudaMemcpyDeviceToDevice);
+                        auto tensor = weights_[i + idx * layer_num_].to(torch::kCPU); ;
+                        // auto scale = scales[i + idx * layer_num_];
+                        ft::loadWeightFromBufferAndQuantizeForWeightOnly<T>(int8_weights_ptr_[i][j],
+                                                        weight_only_scale_ptr_[i][j],
+                                                        shapes[j],
+                                                        get_ptr<T>(tensor),
+                                                        dtype,
+                                                        qtype); 
                         j++;
+                        // std::cout << "j: "<< j << ", :" << scale.numel() << std::endl;
+                        // std::cout << "Tensor Device: " << scale.device() << std::endl;
+                        // std::cout << "Tensor data type: " << scale.dtype() << std::endl;
+
+                        // cudaMemcpy(int8_weights_ptr_[i][j], get_ptr<T>(tensor), tensor.numel() * sizeof(int32_t), cudaMemcpyDeviceToDevice);
+                        // cudaMemcpy(weight_only_scale_ptr_[i][j], get_ptr<T>(scale), scale.numel() * sizeof(T), cudaMemcpyDeviceToDevice);
+                        // j++;
                     }
                 } else {
                     throw std::runtime_error("Int mode is not supported.");
@@ -275,15 +300,13 @@ public:
                 }
             }
 
-            if (int8_mode_ == 1) {
-                for (int i = 0; i < weight_only_scale_ptr_.size(); i++) {
-                    for (auto& x : weight_only_scale_ptr_[i]) {
-                        if (x != nullptr) {
-                            ft::deviceFree(x);
-                        }
+            for (int i = 0; i < weight_only_scale_ptr_.size(); i++) {
+                for (auto& x : weight_only_scale_ptr_[i]) {
+                    if (x != nullptr) {
+                        ft::deviceFree(x);
                     }
                 }
-            } 
+            }
         }
     }
 
@@ -302,7 +325,8 @@ public:
                  th::optional<th::Tensor> repetition_penalty_opt,
                  th::optional<th::Tensor> random_seed_opt,
                  th::optional<int64_t>    return_cum_log_probs_opt,
-                 std::function<void(th::Tensor, th::Tensor)> callback) override
+                 std::function<void(th::Tensor, th::Tensor)> callback,
+                 std::function<void(th::Tensor)> last_hidden_state_callback) override
     {
         int return_cum_log_probs = return_cum_log_probs_opt.has_value() ? (int)return_cum_log_probs_opt.value() : 0;
 
@@ -434,6 +458,23 @@ public:
                 if (callback) {
                     callback(output_ids, sequence_lengths);
                 }
+            }, [&](void* last_hidden_state_buf){
+                if (last_hidden_state_callback) {
+                    auto options = torch::TensorOptions(); 
+                    if (std::is_same<T, half>::value) {
+                        options = options.dtype(torch::kFloat16);
+                    }
+                    else if (std::is_same<T, float>::value) {
+                        options = options.dtype(torch::kFloat);
+                    }
+                    else if (std::is_same<T, __nv_bfloat16>::value) {
+                        options = options.dtype(torch::kBFloat16);
+                    }
+                    else {
+                        throw std::runtime_error("Unsupported dtype for FT-llama");
+                    }
+                    last_hidden_state_callback(torch::from_blob(last_hidden_state_buf, {request_batch_size, beam_width, max_input_length, head_num_ * size_per_head_}, options.device(input_ids.device())));
+                }
             });
         }
         catch (std::runtime_error& error) {
@@ -511,7 +552,8 @@ public:
                                th::optional<th::Tensor> repetition_penalty_opt,
                                th::optional<th::Tensor> random_seed_opt,
                                th::optional<int64_t>    return_cum_log_probs_opt,
-                               Callback_t callback);
+                               Callback_t callback,
+                               HiddenStateCallback_t hs_callback);
 
 private:
     const at::ScalarType    st_;

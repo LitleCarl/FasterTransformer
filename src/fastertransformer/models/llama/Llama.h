@@ -220,7 +220,8 @@ public:
     void forward(std::unordered_map<std::string, Tensor>*       output_tensors,
                  const std::unordered_map<std::string, Tensor>* input_tensors,
                  const LlamaWeight<T>*                          gpt_weights,
-                 std::function<void(std::unordered_map<std::string, Tensor>*)> callback = nullptr);
+                 std::function<void(std::unordered_map<std::string, Tensor>*)> callback = nullptr,
+                 std::function<void(void*)> last_hidden_state_callback = nullptr);
 
    size_t getPipelineParallelRank();
     size_t getPipelineParallelSize();

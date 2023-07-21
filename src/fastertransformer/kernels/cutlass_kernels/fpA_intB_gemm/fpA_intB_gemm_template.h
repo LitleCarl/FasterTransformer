@@ -142,11 +142,18 @@ void generic_mixed_gemm_kernelLauncher(const T*          A,
         cutlass::platform::is_same<cutlass::layout::RowMajor, typename MixedGemmArchTraits::LayoutB>::value ?
             n :
             k * GemmKernel::kInterleave;
-
+    int scale_stride = 0;
+    // if (cutlass::platform::is_same<WeightType, cutlass::uint4b_t>::value) {
+    //     if (k % 128 != 0) {
+    //         std::string err_msg = "4-bit inference only support weight of size [m, n] where `m % 128 == 0` ";
+    //         throw std::runtime_error("[FT Error][fpA_intB Runner] " + err_msg);
+    //     }
+    //     scale_stride = n;
+    // }
     typename Gemm::Arguments args({m, n, k},
                                   {reinterpret_cast<ElementType*>(const_cast<T*>(A)), k},
                                   {reinterpret_cast<CutlassWeightType*>(const_cast<WeightType*>(B)), ldb},
-                                  {reinterpret_cast<ElementType*>(const_cast<T*>(weight_scales)), 0},
+                                  {reinterpret_cast<ElementType*>(const_cast<T*>(weight_scales)), scale_stride},
                                   {reinterpret_cast<ElementType*>(const_cast<T*>(biases)), 0},
                                   {reinterpret_cast<ElementType*>(C), n},
                                   gemm_config.split_k_factor,

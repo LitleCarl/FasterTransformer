@@ -264,7 +264,6 @@ public:
         static_assert(ExpandedMmaOperandB::kElements * MmaOperator::MmaIterations::kColumn
                           == FragmentDequantizedOperand::kElements,
                       "");
-
         multiplies<ExpandedMmaOperandB> mul_op;
 
         ExpandedMmaOperandB* operand_frag_ptr = reinterpret_cast<ExpandedMmaOperandB*>(&operand_frag);
@@ -356,7 +355,6 @@ public:
     void dequantize(FragmentDequantizedOperand& operand_frag, const FragmentScale& scale_frag)
     {
         static_assert(FragmentScale::kElements == FragmentDequantizedOperand::kElements, "");
-
         multiplies<FragmentDequantizedOperand> mul_op;
         operand_frag = mul_op(operand_frag, scale_frag);
     }

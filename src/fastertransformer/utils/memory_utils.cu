@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "src/fastertransformer/kernels/cutlass_kernels/cutlass_preprocessors.h"
 #include "src/fastertransformer/utils/Tensor.h"
 #include "src/fastertransformer/utils/cuda_type_utils.cuh"
 #include "src/fastertransformer/utils/logger.h"
@@ -22,6 +21,7 @@
 #include <curand_kernel.h>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <cmath>
 
 namespace fastertransformer {
 
@@ -474,12 +474,21 @@ template<typename T, typename T_IN>
 int loadWeightFromBufferAndQuantizeForWeightOnlyFunc(int8_t*             ptr,
                                                   T*                  scales_ptr,
                                                   std::vector<size_t> shape,
-                                                  T_IN* host_buf
+                                                  T_IN* host_buf,
+                                                  QuantType quant_type
                                                   )
 {
     FT_CHECK_WITH_INFO(shape.size() == 2, "We can only use this function to dequantize a weight matrix.");
 
-    const size_t        num_elts = shape[0] * shape[1];
+    size_t num_elts = 0;
+    if (quant_type == QuantType::INT8_WEIGHT_ONLY) {
+        num_elts = shape[0] * shape[1];
+    } else if (quant_type == QuantType::PACKED_INT4_WEIGHT_ONLY) {
+        num_elts = shape[0] * (size_t)(std::ceil(shape[1] * 0.5f)); 
+    }
+
+    FT_CHECK_WITH_INFO(num_elts > 0, "Error: number of element to be quantized is zero.");
+    
     std::vector<int8_t> host_quantized_weight_buf(num_elts);
     std::vector<T>      host_scales_buf(shape[1]);
 
@@ -488,7 +497,7 @@ int loadWeightFromBufferAndQuantizeForWeightOnlyFunc(int8_t*             ptr,
                                 host_scales_buf.data(),
                                 host_buf,
                                 shape,
-                                QuantType::INT8_WEIGHT_ONLY);
+                                quant_type);
 
     cudaH2Dcpy(ptr, (int8_t*)host_quantized_weight_buf.data(), host_quantized_weight_buf.size());
     cudaH2Dcpy(scales_ptr, (T*)host_scales_buf.data(), host_scales_buf.size());
@@ -501,19 +510,20 @@ int loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*             quantized_w
                                               T*                  scale_ptr,
                                               std::vector<size_t> shape,
                                               void* host_buf,
-                                              FtCudaDataType      model_file_type)
+                                              FtCudaDataType      model_file_type,
+                                              QuantType quant_type)
 {
     switch (model_file_type) {
         case FtCudaDataType::FP32:
-            loadWeightFromBufferAndQuantizeForWeightOnlyFunc<T, float>(quantized_weight_ptr, scale_ptr, shape, (float *)host_buf);
+            loadWeightFromBufferAndQuantizeForWeightOnlyFunc<T, float>(quantized_weight_ptr, scale_ptr, shape, (float *)host_buf, quant_type);
             break;
         case FtCudaDataType::FP16:
-            loadWeightFromBufferAndQuantizeForWeightOnlyFunc<T, half>(quantized_weight_ptr, scale_ptr, shape, (half *)host_buf);
+            loadWeightFromBufferAndQuantizeForWeightOnlyFunc<T, half>(quantized_weight_ptr, scale_ptr, shape, (half *)host_buf, quant_type);
             break;
 #ifdef ENABLE_BF16
         case FtCudaDataType::BF16:
             loadWeightFromBufferAndQuantizeForWeightOnlyFunc<T, __nv_bfloat16>(
-                quantized_weight_ptr, scale_ptr, shape, (__nv_bfloat16 *)host_buf);
+                quantized_weight_ptr, scale_ptr, shape, (__nv_bfloat16 *)host_buf, quant_type);
             break;
 #endif
         default:
@@ -522,24 +532,26 @@ int loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*             quantized_w
     }
     return 0;
 }
+
 template<>
 int loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*             quantized_weight_ptr,
                                               float*              scale_ptr,
                                               std::vector<size_t> shape,
                                               void* host_buf,
-                                              FtCudaDataType      model_file_type)
+                                              FtCudaDataType      model_file_type,
+                                              QuantType quant_type)
 {
     FT_CHECK_WITH_INFO(false, "Weight only quant not supported with FP32 compute.");
     return 0;
 }
 
 template int
-loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*, float*, std::vector<size_t>, void* host_buf, FtCudaDataType);
+loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*, float*, std::vector<size_t>, void*, FtCudaDataType, QuantType);
 template int
-loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*, half*, std::vector<size_t>, void* host_buf, FtCudaDataType);
+loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*, half*, std::vector<size_t>, void*, FtCudaDataType, QuantType);
 #ifdef ENABLE_BF16
 template int
-loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*, __nv_bfloat16*, std::vector<size_t>, void* host_buf, FtCudaDataType);
+loadWeightFromBufferAndQuantizeForWeightOnly(int8_t*, __nv_bfloat16*, std::vector<size_t>, void*, FtCudaDataType, QuantType);
 #endif
 
 template<typename T>

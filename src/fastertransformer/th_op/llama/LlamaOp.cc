@@ -43,8 +43,10 @@ LlamaOp::LlamaOp(const int64_t                head_num,
 
     st_(weights[0].scalar_type())
 {
-    for (auto t : weights) {
-        CHECK_INPUT(t, st_);
+    if (int8_mode == 0 || int8_mode == 1) {
+        for (auto t : weights) {
+            CHECK_INPUT(t, st_);
+        }
     }
 
     switch (st_) {
@@ -124,7 +126,8 @@ std::vector<th::Tensor> LlamaOp::forward(th::Tensor               input_ids,
                                            th::optional<th::Tensor> repetition_penalty_opt,
                                            th::optional<th::Tensor> random_seed_opt,
                                            th::optional<int64_t>    return_cum_log_probs_opt,
-                                           Callback_t callback)
+                                           Callback_t callback,
+                                           HiddenStateCallback_t hs_callback)
 {
     CHECK_TH_CUDA(input_ids);
     CHECK_CONTIGUOUS(input_ids);
@@ -166,7 +169,7 @@ std::vector<th::Tensor> LlamaOp::forward(th::Tensor               input_ids,
                    len_penalty_opt,
                    repetition_penalty_opt,
                    random_seed_opt,
-                   return_cum_log_probs_opt, callback);
+                   return_cum_log_probs_opt, callback, hs_callback);
     if (return_cum_log_probs > 0) {
         return std::vector<th::Tensor>{output_ids, sequence_lengths, cum_log_probs};
     }
@@ -195,25 +198,3 @@ PYBIND11_MODULE(libth_transformer, m) {
                         std::vector<th::Tensor>, std::vector<th::Tensor>, int64_t>())
         .def("forward", &torch_ext::LlamaOp::forward);
 }
-
-// static auto fasterTransformerLlamaTHS =
-// #ifdef LEGACY_THS
-//     torch::jit::class_<torch_ext::LlamaOp>("FasterTransformerLlamaOp")
-// #else
-//     torch::jit::class_<torch_ext::LlamaOp>("FasterTransformer", "LlamaOp")
-// #endif
-//         .def(torch::jit::init<int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               double,
-//                               int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               int64_t,
-//                               bool,
-//                               std::vector<th::Tensor>, int64_t>())
-//         .def("forward", &torch_ext::LlamaOp::forward);

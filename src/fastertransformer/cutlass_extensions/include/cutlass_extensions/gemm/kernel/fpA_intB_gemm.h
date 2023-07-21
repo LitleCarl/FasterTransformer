@@ -94,7 +94,8 @@ struct GemmFpAIntB {
     static int const kThreadCount = 32 * WarpCount::kCount;
 
     static constexpr int kInterleave = Mma::IteratorB::Shape::kRow / Mma::Shape::kK;
-
+    static constexpr int cjxInterleave = Mma::IteratorScale::Shape::kRow / Mma::Shape::kK;
+    
     /// Parameters structure
     struct Arguments {
         GemmUniversalMode mode = GemmUniversalMode::kGemm;
@@ -176,6 +177,9 @@ struct GemmFpAIntB {
         int const* gather_B_indices;
         int const* scatter_D_indices;
 
+        // Lepton
+        // int group_size = 1;
+
         //
         // Methods
         //
@@ -208,6 +212,12 @@ struct GemmFpAIntB {
             gather_B_indices(args.gather_B_indices),
             scatter_D_indices(args.scatter_D_indices)
         {
+            // 
+            // if (args.ref_scale.layout().stride()[0] == 0) {
+            //    group_size = 1; 
+            // } else {
+            //    group_size = problem_size.k() / 128;
+            // }
         }
     };
 
@@ -302,7 +312,7 @@ struct GemmFpAIntB {
             static_assert(platform::is_same<LayoutB, layout::RowMajor>::value && kInterleave == 1
                               || platform::is_same<LayoutB, layout::ColumnMajor>::value && kInterleave >= 1,
                           "B must be row major/col major OR col major interleaved.");
-
+            
             // Compute threadblock location
             ThreadblockSwizzle threadblock_swizzle;
 
@@ -325,6 +335,13 @@ struct GemmFpAIntB {
             cutlass::MatrixCoord tb_offset_B{threadblock_tile_offset.k() * params.gemm_k_size * kInterleave,
                                              threadblock_tile_offset.n() * Mma::Shape::kN / kInterleave};
 
+            // // scale tile offset:
+            // int tb_offset_scale_i = 0;
+            // if (params.group_size == 1) {
+            //     tb_offset_scale_i = 0;
+            // } else {
+            //     tb_offset_scale_i = threadblock_tile_offset.k() * params.gemm_k_size / 128;
+            // }
             cutlass::MatrixCoord tb_offset_scale{0, threadblock_tile_offset.n() * Mma::Shape::kN};
 
             // Problem size is a function of threadblock index in the K dimension
@@ -351,12 +368,13 @@ struct GemmFpAIntB {
                                                tb_offset_B,
                                                params.gather_B_indices);
 
+            // TODO:cjx 由于在MMA Kernel中，iterator_scale不会被用来继续操作ptr idx，因此int4下刚好可以这么用而已
             typename Mma::IteratorScale iterator_scale(params.params_scale,
                                                        params.ref_scale.data(),
                                                        {1, params.problem_size.n()},
                                                        thread_idx,
                                                        tb_offset_scale);
-
+            // printf("Mma::Shape: M:%d, N: %d, K:%d", Mma::Shape::kM, Mma::Shape::kN, Mma::Shape::kK);
             // Broadcast the warp_id computed by lane 0 to ensure dependent code
             // is compiled as warp-uniform.
             int warp_idx = __shfl_sync(0xffffffff, threadIdx.x / 32, 0);
