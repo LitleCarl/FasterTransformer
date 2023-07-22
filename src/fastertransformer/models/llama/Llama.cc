@@ -645,7 +645,7 @@ void Llama<T>::forward(std::unordered_map<std::string, Tensor>*       output_ten
     sync_check_cuda_error();
 
     // handle first step
-    if (has_prefix_prompt_ || has_prefix_soft_prompt_ || max_input_length > 1) {
+    if (has_prefix_prompt_ || has_prefix_soft_prompt_ || max_input_length >= 1) {
         invokeTileGptInputs(tiled_input_ids_buf_,
                             tiled_input_lengths_buf_,
                             input_tensors->at("input_ids").getPtr<int>(),
